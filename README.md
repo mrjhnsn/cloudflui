@@ -2,7 +2,9 @@
 
 A terminal UI for managing Cloudflare DNS zones, records, and Workers deployments.
 
-Built with [Bubble Tea v2](https://charm.land/bubbletea), [Lipgloss v2](https://charm.land/lipgloss), and the [cloudflare-go v7](https://github.com/cloudflare/cloudflare-go) SDK.
+The UI is built with [OpenTUI](https://opentui.com) (Rust). It drives a small Go
+backend that owns the Cloudflare SDK and config store, speaking newline-delimited
+JSON-RPC over stdin/stdout.
 
 ## Features
 
@@ -12,10 +14,43 @@ Built with [Bubble Tea v2](https://charm.land/bubbletea), [Lipgloss v2](https://
 - **Config** — manage multiple API token profiles stored in TOML
 - **Workers** — list Workers scripts and their deployment history
 
-## Install
+## Architecture
+
+```
+┌──────────────────────┐   JSON-RPC (stdin/stdout)   ┌──────────────────────┐
+│  ui/  (Rust, OpenTUI) │ ──────────────────────────▶ │  cloudflui (Go)     │
+│  renders the five     │ ◀────────────────────────── │  Cloudflare SDK     │
+│  panes, key handling  │    newline-delimited JSON    │  config store (TOML)│
+└──────────────────────┘                              └──────────────────────┘
+```
+
+The frontend spawns the Go backend as a subprocess and treats it as the single
+source of truth for data. The backend exposes one method per operation
+(`list_zones`, `list_records`, `create_record`, `save_profile`, …) and the
+frontend never talks to Cloudflare directly.
+
+## Build
+
+The Go backend:
 
 ```sh
-go install .
+go build -o cloudflui .
+```
+
+The Rust UI (needs Rust 1.88+):
+
+```sh
+cd ui
+scripts/fetch-opentui.sh   # downloads the OpenTUI native library
+cargo build --release
+```
+
+The UI resolves the backend via the `CLOUDFLUI_BACKEND` env var, falling back to
+`cloudflui` on `PATH`. Install both on `PATH`, or point the UI at a specific
+backend binary:
+
+```sh
+CLOUDFLUI_BACKEND=./cloudflui ./ui/target/release/cloudflui-ui
 ```
 
 ## Configuration
@@ -54,23 +89,6 @@ esc         back
 q / ctrl+c  quit
 ```
 
-Paste into any text field with your terminal's paste shortcut (e.g. `Cmd+V` or `Ctrl+Shift+V`) while the field is being edited.
-
-## Long lists
-
-The TUI runs in the terminal's alternate screen and fills it completely. The
-Zones, Records and Workers lists are windowed to the available height, so
-accounts with hundreds of zones or records stay navigable. When a list is
-longer than the pane, a footer shows the visible range:
-
-```
-41-59 of 312  (page 3/17)
-```
-
-`pgup`/`pgdn` move a full page at a time and `g`/`G` jump to the first and
-last item. Lists that fit on screen show no footer. Refreshing a list keeps
-your position instead of jumping back to the top.
-
 ## Profiles
 
 The **active profile** is the one used for API calls in the current session. The **default profile** is the one used on startup.
@@ -78,29 +96,39 @@ The **active profile** is the one used for API calls in the current session. The
 - `a` on a profile switches the active profile immediately (not persisted)
 - `m` on a profile makes it the default and activates it (persisted to `config.toml`)
 
-## Layout
+## JSON-RPC protocol
 
-```
-cloudflui
-[Zones][Records][Editor][Config][Workers]
-┌────────────────────────────────────────┐
-│ ●  example.com                         │
-│ ◌  pending-zone.net                    │
-└────────────────────────────────────────┘
-Profile: main
-tab/1-5: switch  j/k: move  enter: select  ...
-```
+The backend reads one JSON request per line on stdin and writes one response per
+line on stdout. Each request has an `id`, `method`, and optional `params`; each
+response has the matching `id` plus a `result` or an `error`.
+
+| method               | params                                  | result          |
+| -------------------- | --------------------------------------- | --------------- |
+| `ping`               | —                                       | `{ ok: true }`  |
+| `get_config`         | —                                       | `Config`        |
+| `list_zones`         | —                                       | `[Zone]`        |
+| `list_records`       | `{ zone_id }`                           | `[Record]`      |
+| `create_record`      | `{ zone_id, name, type, content, ttl, proxied, comment }` | `{}` |
+| `update_record`      | `{ zone_id, record_id, name, type, content, ttl, proxied, comment }` | `{}` |
+| `delete_record`      | `{ zone_id, record_id }`                | `{}`            |
+| `list_workers`       | `{ account_id }`                        | `[WorkerScript]`|
+| `list_deployments`   | `{ account_id, script }`                | `[Deployment]`  |
+| `save_profile`       | `{ name, api_key, account_id }`         | `Config`        |
+| `delete_profile`     | `{ name }`                              | `Config`        |
+| `activate_profile`   | `{ name }`                              | `Config`        |
+| `set_default_profile`| `{ name }`                              | `Config`        |
 
 ## Project structure
 
 ```
-main.go                     entry point
-internal/config/            TOML profile store
+main.go                     Go entry point: the JSON-RPC backend
+internal/backend/           RPC server + backend operations
 internal/api/               Cloudflare SDK wrappers
-internal/messages/          Bubble Tea messages
-internal/styles/            lipgloss theme
-internal/components/        the five panes
-internal/model/             root model, update, view
+internal/config/            TOML profile store
+ui/                         Rust OpenTUI frontend
+ui/src/main.rs              panes, key handling, state
+ui/src/backend.rs           backend subprocess client
+ui/scripts/fetch-opentui.sh downloads the OpenTUI native library
 ```
 
 ## Notes

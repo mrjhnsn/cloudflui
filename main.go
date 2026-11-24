@@ -1,25 +1,24 @@
-// Command cloudflui is a TUI for managing Cloudflare DNS zones, records,
-// and Workers deployments.
+// Command cloudflui is a headless backend for managing Cloudflare DNS zones,
+// records, and Workers deployments. It speaks newline-delimited JSON-RPC on
+// stdin/stdout and is driven by the OpenTUI frontend in ui/.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"charm.land/bubbletea/v2"
-
-	"cloudflui/internal/model"
+	"cloudflui/internal/backend"
 )
 
 func main() {
-	m, err := model.New()
+	b, err := backend.New()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cloudflui:", err)
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(m)
-	if _, err := p.Run(); err != nil {
+	srv := backend.NewServer(b)
+	if err := srv.Serve(os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "cloudflui:", err)
 		os.Exit(1)
 	}
